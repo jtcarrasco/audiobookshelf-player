@@ -477,7 +477,14 @@ PluginComponent {
         // back from) bubbles up to the container. Keys the text fields don't
         // use bubble up here too.
         focus: true
-        Timer { id: grabFocus; interval: 50; running: true; onTriggered: bodyHost.forceActiveFocus() }
+        Timer { interval: 50; running: true; onTriggered: bodyHost.forceActiveFocus() }
+        // DMS's container can take focus back after the timer above (it grabs
+        // focus again once the popout becomes visible), and Tab can move focus
+        // onto a button. Whenever focus lands anywhere but here or a text
+        // field, take it back so keys keep working.
+        readonly property Item focusNow: Window.activeFocusItem
+        onFocusNowChanged: if (focusNow !== bodyHost && !anyFieldFocused()) refocus.restart()
+        Timer { id: refocus; interval: 30; onTriggered: if (!bodyHost.anyFieldFocused()) bodyHost.forceActiveFocus() }
 
         function anyFieldFocused() {
           return searchField.getActiveFocus() || urlField.getActiveFocus()
