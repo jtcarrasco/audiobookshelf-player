@@ -633,6 +633,7 @@ Panel {
           Layout.fillWidth: true
           spacing: Style.spacing.xxs
           Text {
+            textFormat: Text.PlainText
             text: "Audiobookshelf"
             color: root.fg
             font.family: root.fontFamily
@@ -640,6 +641,7 @@ Panel {
             font.bold: true
           }
           Text {
+            textFormat: Text.PlainText
             visible: root.serverUrl !== ""
             text: root.serverUrl
             color: urlMouse.containsMouse ? Color.accent : root.mutedFg
@@ -656,6 +658,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.settingsView || root.openPodcast !== null
           Layout.fillWidth: true
           text: root.settingsView ? (root.configured ? "Settings" : "Connect to Audiobookshelf")
@@ -691,6 +694,7 @@ Panel {
           foreground: root.fg
           onClicked: root.refresh()
           Text {
+            textFormat: Text.PlainText
             anchors.centerIn: parent
             visible: root.refreshing
             text: "󰑐"
@@ -741,6 +745,7 @@ Panel {
           spacing: Style.spacing.lg
 
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             text: "Your password goes straight to the server to get a login token, which is stored in the system keyring. It's never saved to a file."
@@ -763,6 +768,7 @@ Panel {
             text: "LIBRARIES"; foreground: root.fg; fontFamily: root.fontFamily
           }
           Text {
+            textFormat: Text.PlainText
             visible: root.configured && root.libraries.length > 0
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
@@ -792,6 +798,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             visible: root.setupError !== ""
             text: root.setupError
@@ -818,6 +825,7 @@ Panel {
           PanelSeparator { visible: root.configured; Layout.fillWidth: true; foreground: root.fg }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.configured
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
@@ -872,6 +880,7 @@ Panel {
                   border.width: 1
                   border.color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.25)
                   Text {
+                    textFormat: Text.PlainText
                     id: keyText
                     anchors.centerIn: parent
                     text: modelData.key
@@ -882,6 +891,7 @@ Panel {
                   }
                 }
                 Text {
+                  textFormat: Text.PlainText
                   id: actionText
                   anchors.left: keyChip.right
                   anchors.leftMargin: Style.spacing.md
@@ -927,6 +937,7 @@ Panel {
             asynchronous: true
           }
           Text {
+            textFormat: Text.PlainText
             anchors.horizontalCenter: parent.horizontalCenter
             text: "Audiobookshelf"
             color: root.fg
@@ -935,6 +946,7 @@ Panel {
             font.bold: true
           }
           Text {
+            textFormat: Text.PlainText
             anchors.horizontalCenter: parent.horizontalCenter
             visible: root.serverUrl !== ""
             text: root.serverUrl
@@ -994,6 +1006,7 @@ Panel {
       }
 
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         visible: !root.settingsView && !root.onHome && (root.listError !== "" || root.itemsLoading || root.episodesLoading
           || (root.openPodcast === null && root.visibleItems.length === 0))
@@ -1103,6 +1116,7 @@ Panel {
       }
       }
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         horizontalAlignment: Text.AlignHCenter
         text: player.title
@@ -1115,6 +1129,7 @@ Panel {
         elide: Text.ElideRight
       }
       Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         horizontalAlignment: Text.AlignHCenter
         visible: player.subtitle !== ""
@@ -1154,6 +1169,7 @@ Panel {
         Layout.fillWidth: true
         spacing: Style.spacing.xs
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: player.title
           color: root.fg
@@ -1163,6 +1179,7 @@ Panel {
           elide: Text.ElideRight
         }
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           visible: player.subtitle !== ""
           text: player.subtitle
@@ -1190,6 +1207,7 @@ Panel {
       Layout.fillWidth: true
       visible: player.hasItem
       Text {
+        textFormat: Text.PlainText
         text: Model.formatTime(seekSlider.dragging ? seekSlider.liveValue : player.position)
         color: root.mutedFg
         font.family: root.fontFamily
@@ -1197,6 +1215,7 @@ Panel {
       }
       Item { Layout.fillWidth: true }
       Text {
+        textFormat: Text.PlainText
         text: player.loading ? "Loading..." : Model.formatTime(player.duration)
         color: root.mutedFg
         font.family: root.fontFamily
@@ -1291,6 +1310,7 @@ Panel {
       contentHeight: notesText.implicitHeight
       boundsBehavior: Flickable.StopAtBounds
       Text {
+        textFormat: Text.PlainText
         id: notesText
         width: notesView.width
         text: player.currentEpisode ? (player.currentEpisode.description || "") : ""
@@ -1302,6 +1322,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       Layout.fillWidth: true
       visible: player.errorText !== ""
       text: player.errorText
@@ -1384,6 +1405,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       id: glyphText
       opacity: row.contentOpacity
       visible: row.glyph !== "" && row.cover === ""
@@ -1410,6 +1432,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       id: finishedMark
       visible: row.finished
       anchors.right: parent.right
@@ -1435,6 +1458,7 @@ Panel {
       border.color: Color.accent
 
       Text {
+        textFormat: Text.PlainText
         id: badgeText
         anchors.centerIn: parent
         text: row.badge
@@ -1457,6 +1481,7 @@ Panel {
       spacing: Style.spacing.xxs
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: row.primary
         color: row.current ? Color.accent : root.fg
@@ -1465,6 +1490,7 @@ Panel {
         elide: Text.ElideRight
       }
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         visible: row.secondary !== ""
         text: row.secondary

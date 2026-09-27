@@ -213,6 +213,9 @@ Item {
         // mpv-mpris only publishes cover art for remote streams from a local
         // cover-art-files image; the backend caches the cover for us.
         mpvInstance.send(["set_property", "cover-art-files", session.coverPath || ""])
+        // The login token goes as a request header, not in the URL: mpv
+        // publishes the playing URL over MPRIS, where anything could read it.
+        mpvInstance.send(["set_property", "http-header-fields", session.streamHeaders || []])
         mpvInstance.load(session.streamUrl)
       }
     }

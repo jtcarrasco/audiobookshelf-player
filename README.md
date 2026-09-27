@@ -125,6 +125,16 @@ omarchy-shell abs-player home
 omarchy-shell abs-player popOut          # open in its own window
 ```
 
+## DankMaterialShell
+
+The [`dms/`](dms/) folder is a standalone DankMaterialShell plugin with the same
+features and keys (except `z`; DMS popouts have no separate window). Copy the
+folder into `~/.config/DankMaterialShell/plugins/AbsPlayer`, restart DMS
+(`dms restart`), then enable **Audiobookshelf** in DMS settings → Plugins and
+add it to your bar. Right-click the bar icon to play / pause;
+`dms ipc call absPlayer toggle | playPause | home` works from keybindings.
+For the DMS media widget and media keys, install `mpv-mpris`.
+
 ## Settings
 
 - **Check for new episodes every:** how often the plugin checks your podcast

@@ -29,7 +29,10 @@ def normalize_base_url(base_url: str) -> str:
 def check_is_abs(base_url: str) -> None:
     """GET /ping, which every Audiobookshelf server answers with
     {"success": true}. Catches a wrong address (another web app, a dashboard)
-    before the password is sent anywhere."""
+    before the password is sent anywhere. Only http(s) addresses are accepted:
+    urllib would otherwise also open file://, ftp:// and data: URLs."""
+    if urlsplit(base_url).scheme not in ("http", "https"):
+        raise AbsAuthError("the server address must start with http:// or https://")
     request = Request(base_url.rstrip("/") + "/ping", method="GET")
     try:
         with urlopen(request, timeout=10) as response:
@@ -69,6 +72,17 @@ def login(base_url: str, username: str, password: str) -> dict:
         raise AbsAuthError("server returned invalid JSON") from exc
 
 
+def _seg(value) -> str:
+    """Quote a server-supplied id for use as one URL path segment, so an id
+    can't add path segments, a query or a fragment."""
+    return quote(str(value), safe="")
+
+
+def _progress_path(progress_key: str) -> str:
+    """<itemId> or <itemId>/<episodeId>, each part quoted on its own."""
+    return "/".join(_seg(part) for part in str(progress_key).split("/", 1))
+
+
 def _authed_get(base_url: str, token: str, path: str) -> dict:
     """GET an ABS API path with a bearer token, return parsed JSON."""
     url = base_url.rstrip("/") + path
@@ -84,7 +98,7 @@ def _authed_get(base_url: str, token: str, path: str) -> dict:
 
 def list_library_items(base_url: str, token: str, library_id: str) -> list:
     """GET /api/libraries/<id>/items, return the results list (books+podcasts)."""
-    data = _authed_get(base_url, token, f"/api/libraries/{library_id}/items")
+    data = _authed_get(base_url, token, f"/api/libraries/{_seg(library_id)}/items")
     return data.get("results", [])
 
 
@@ -155,13 +169,12 @@ def html_to_text(fragment: str) -> str:
     return text.strip()
 
 
-def cover_url(base_url: str, token: str, item_id: str, width: int = 160) -> str:
-    """Resized cover for the list thumbnails. GET requests accept the token as
-    a query parameter (same approach as resolve_stream_url). JPEG rather than
-    WebP: Qt only decodes WebP with the optional qt6-imageformats plugin,
-    which minimal installs don't have."""
-    return (base_url.rstrip("/") + f"/api/items/{item_id}/cover?width={width}&format=jpeg&token="
-            + quote(token, safe=""))
+def cover_url(base_url: str, item_id: str, width: int = 160) -> str:
+    """Resized cover for the list thumbnails. Audiobookshelf serves covers
+    without authentication, so no token goes in the URL (URLs end up in logs
+    and error messages). JPEG rather than WebP: Qt only decodes WebP with the
+    optional qt6-imageformats plugin, which minimal installs don't have."""
+    return base_url.rstrip("/") + f"/api/items/{_seg(item_id)}/cover?width={width}&format=jpeg"
 
 
 COVER_CACHE_DIR = os.path.expanduser("~/.cache/audiobookshelf-plugin/covers")
@@ -171,12 +184,17 @@ def cache_cover(base_url: str, token: str, item_id: str) -> str:
     """Download an item's cover to a local file and return its path, or "" on
     failure. MPRIS bridges like mpv-mpris only publish cover art for remote
     streams when mpv's cover-art-files points at a local image."""
+    # The id comes from the server; keep it to a plain filename so it can't
+    # point outside the cache folder.
+    name = "".join(c for c in str(item_id) if c.isalnum() or c in "-_") or "cover"
     os.makedirs(COVER_CACHE_DIR, exist_ok=True)
-    path = os.path.join(COVER_CACHE_DIR, f"{item_id}.jpg")
+    path = os.path.join(COVER_CACHE_DIR, f"{name}.jpg")
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
     try:
-        with urlopen(Request(cover_url(base_url, token, item_id, width=512)), timeout=10) as response:
+        request = Request(cover_url(base_url, item_id, width=512),
+                          headers={"Authorization": f"Bearer {token}"})
+        with urlopen(request, timeout=10) as response:
             data = response.read()
     except (HTTPError, URLError):
         return ""
@@ -193,7 +211,7 @@ def set_finished(base_url: str, token: str, progress_key: str, finished: bool) -
     """PATCH /api/me/progress/<key> {isFinished}. <key> is an item id, or
     <itemId>/<episodeId> for a podcast episode."""
     body = json.dumps({"isFinished": finished}).encode("utf-8")
-    url = base_url.rstrip("/") + f"/api/me/progress/{progress_key}"
+    url = base_url.rstrip("/") + "/api/me/progress/" + _progress_path(progress_key)
     request = Request(
         url, data=body,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -253,7 +271,7 @@ def list_episodes(base_url: str, token: str, item_id: str, progress_index: dict 
     """GET /api/items/<id>?expanded=1 for a podcast and return its episodes,
     newest first, trimmed to what the panel's episode list needs. Library-list
     responses only carry numEpisodes, not the episodes themselves."""
-    data = _authed_get(base_url, token, f"/api/items/{item_id}?expanded=1")
+    data = _authed_get(base_url, token, f"/api/items/{_seg(item_id)}?expanded=1")
     episodes = (data.get("media") or {}).get("episodes") or []
     trimmed = [{
         "id": ep.get("id"),
@@ -271,7 +289,7 @@ def list_episodes(base_url: str, token: str, item_id: str, progress_index: dict 
 
 def get_progress(base_url: str, token: str, item_id: str):
     """GET /api/me/progress/<id>. Returns None if the item has never been played."""
-    url = base_url.rstrip("/") + f"/api/me/progress/{item_id}"
+    url = base_url.rstrip("/") + "/api/me/progress/" + _progress_path(item_id)
     request = Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
     try:
         with urlopen(request, timeout=10) as response:
@@ -295,9 +313,9 @@ def start_playback(base_url: str, token: str, item_id: str, episode_id: str = No
     start-playback CLI command below, which is what LibraryWindow.qml's item-selection
     wiring (Task 16) actually calls.
     """
-    path = f"/api/items/{item_id}/play"
+    path = f"/api/items/{_seg(item_id)}/play"
     if episode_id:
-        path += f"/{episode_id}"
+        path += f"/{_seg(episode_id)}"
     url = base_url.rstrip("/") + path
     body = json.dumps({
         "deviceInfo": {"clientVersion": "0.1.0"},
@@ -317,31 +335,23 @@ def start_playback(base_url: str, token: str, item_id: str, episode_id: str = No
         raise AbsAuthError(f"could not reach server: {exc.reason}") from exc
 
 
-def resolve_stream_url(base_url: str, token: str, content_url: str) -> str:
+def resolve_stream_url(base_url: str, content_url: str) -> str:
     """Turn an ABS audioTrack.contentUrl (server-relative; the filename segment can
-    contain spaces/special characters and is NOT percent-encoded in the API response —
-    see the "Wizards First Rule 01.mp3" example in api.audiobookshelf.org's docs) into
-    an absolute URL mpv can open directly.
+    contain spaces/special characters and is NOT percent-encoded in the API response)
+    into an absolute URL mpv can open. Only the path and query are kept, so the
+    stream always comes from the configured server.
 
-    Auth is embedded as a `token` query parameter rather than an Authorization header:
-    api.audiobookshelf.org's Authentication section explicitly documents this as
-    supported for GET requests ("Optionally GET requests can use the API token like
-    this: https://abs.example.com/api/items/<id>?token=<token>"). This avoids needing
-    to plumb a custom Authorization header through mpv's IPC loadfile options (mpv does
-    support per-load headers via a loadfile options string built from
-    --http-header-fields, confirmed in mpv.io/manual/master's Network and JSON IPC
-    sections, but the query-token route needs no such plumbing and is the simpler,
-    equally-documented option).
-
-    NEEDS LIVE VERIFICATION against a real Audiobookshelf server before this can be
-    trusted — see task-16-report.md. The docs used to source this are explicitly
-    flagged by Audiobookshelf itself as "out-of-date and no longer maintained".
-    """
+    The URL carries no token: mpv publishes the playing URL over MPRIS
+    (xesam:url), where any media widget or playerctl could read it. mpv sends
+    the token as a header instead (stream_headers)."""
     parts = urlsplit(content_url)
     safe_path = "/".join(quote(segment) for segment in parts.path.split("/"))
-    query = parts.query
-    query = (query + "&" if query else "") + "token=" + quote(token, safe="")
-    return base_url.rstrip("/") + safe_path + "?" + query
+    return base_url.rstrip("/") + safe_path + ("?" + parts.query if parts.query else "")
+
+
+def stream_headers(token: str) -> list:
+    """HTTP headers mpv sends with the stream request (http-header-fields)."""
+    return [f"Authorization: Bearer {token}"]
 
 
 def update_progress(base_url: str, token: str, item_id: str, *,
@@ -355,7 +365,7 @@ def update_progress(base_url: str, token: str, item_id: str, *,
     if is_finished:
         payload["isFinished"] = True
     body = json.dumps(payload).encode("utf-8")
-    url = base_url.rstrip("/") + f"/api/me/progress/{item_id}"
+    url = base_url.rstrip("/") + "/api/me/progress/" + _progress_path(item_id)
     request = Request(
         url, data=body,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -661,7 +671,7 @@ if __name__ == "__main__":
                 pass  # the list is still useful without played/unplayed markers
             for item in items:
                 if (item.get("media") or {}).get("coverPath"):
-                    item["coverUrl"] = cover_url(base_url, token, item["id"])
+                    item["coverUrl"] = cover_url(base_url, item["id"])
             print(json.dumps(items))
         elif command == "set-finished":
             try:
@@ -710,7 +720,8 @@ if __name__ == "__main__":
                 sys.exit(1)
             tracks = session.get("audioTracks") or []
             session["streamUrl"] = (
-                resolve_stream_url(base_url, token, tracks[0]["contentUrl"]) if tracks else None)
+                resolve_stream_url(base_url, tracks[0]["contentUrl"]) if tracks else None)
+            session["streamHeaders"] = stream_headers(token)
             session["coverPath"] = cache_cover(base_url, token, item_id)
             print(json.dumps(session))
         elif command == "sync-progress":

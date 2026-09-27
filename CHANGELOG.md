@@ -1,7 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (unreleased)
 
+### Security
+- Server-supplied text (titles, authors, episode names) is always shown as
+  plain text, so markup in a title can't make the shell load remote content.
+- The login token is no longer put in stream or cover URLs: mpv sends it as a
+  request header (mpv publishes the playing URL over MPRIS), and covers load
+  without it. It also stays out of log lines.
+- Server addresses must be http:// or https://.
+- Ids from the server are escaped as single URL path segments, and the cover
+  cache uses sanitized file names.
+
+### DankMaterialShell
+- A DankMaterialShell version of the plugin in `dms/`, sharing the backend and
+  player with the Omarchy one. Title and cover are published over MPRIS
+  (mpv-mpris) for DMS's media widget and media keys.
+
+### Keyboard and polish
 - Keyboard-first navigation, matching the FreshRSS plugin's keys where they
   overlap: `j`/`k` and Home/End to move through the list, Enter to play or open,
   `r`/`f` to toggle finished, `1`/`2`/`3` for Home/Books/Podcasts, Tab to switch
@@ -22,7 +38,7 @@
 - Fix: the two player layouts kept separate speed selections and could
   disagree; speed is now one shared value.
 
-## 0.2.0 (unreleased)
+### Rebuild
 
 Rebuilt after the first hands-on test on Omarchy.
 
