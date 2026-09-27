@@ -38,7 +38,7 @@ control playback from a dropdown that matches your Omarchy theme.
 
 - An Audiobookshelf server you can log into
 - [mpv](https://mpv.io/), installed from your distribution's `mpv` package (setup checks for it)
-- `python3` and `secret-tool` (both ship with Omarchy)
+- `python3`, `secret-tool` and a running keyring that provides the Secret Service, such as gnome-keyring (all ship with Omarchy; minimal installs may need `gnome-keyring`)
 
 ## Install
 
@@ -82,14 +82,36 @@ IDs are written to `~/.config/audiobookshelf-plugin/config.json`.
 - Right-click a book or episode to mark it finished / not finished
 - Header: home, refresh, pop out to half the screen, settings
 
-**Keyboard** (while the dropdown is open)
+**Keyboard** (while the dropdown or its window is open)
+
+Everything is reachable from the keyboard. Where the two overlap, the keys match
+the FreshRSS plugin (and FreshRSS's own shortcuts). The same list is shown at the
+bottom of the settings page.
 
 | Key | Action |
 |---|---|
-| `/` | Search |
+| `j` / `k`, ↓ / ↑ | Move down / up the list |
+| Home / End | First / last item |
+| Enter | Play the selected book or episode, or open a podcast |
+| `r` / `f` | Toggle finished on the selected row (same as right-click) |
+| `1` / `2` / `3` | Home / Books / Podcasts |
+| Tab | Switch between Books and Podcasts |
 | Space | Play / pause |
-| `r` | Refresh the library |
-| Esc | Back (episodes or settings), then close |
+| `h` / `l`, ← / → | Back / forward 30 seconds |
+| `n` / `p` | Next / previous chapter (`p` more than 3s into a chapter restarts it) |
+| `[` / `]` | Slower / faster (0.8x to 2x) |
+| `c` | Show or hide chapters |
+| `/` or `a` | Search |
+| `q` / `R` | Refresh the library |
+| `z` | Switch between the dropdown and its own window |
+| `,` | Settings |
+| Esc | Back (episodes or settings), then back to the dropdown, then close |
+
+The row selected with `j`/`k` gets an accent bar on its left edge; it only
+appears once you've used the keyboard.
+
+Marking a finished item as not finished makes Audiobookshelf restart it from
+0:00, so watch `r`/`f` on finished rows.
 
 The dropdown can also be driven over IPC, e.g. from a Hyprland keybinding:
 
@@ -102,6 +124,16 @@ omarchy-shell abs-player openPodcast "rewatchables"
 omarchy-shell abs-player home
 omarchy-shell abs-player popOut          # open in its own window
 ```
+
+## DankMaterialShell
+
+The [`dms/`](dms/) folder is a standalone DankMaterialShell plugin with the same
+features and keys (except `z`; DMS popouts have no separate window). Copy the
+folder into `~/.config/DankMaterialShell/plugins/AbsPlayer`, restart DMS
+(`dms restart`), then enable **Audiobookshelf** in DMS settings → Plugins and
+add it to your bar. Right-click the bar icon to play / pause;
+`dms ipc call absPlayer toggle | playPause | home` works from keybindings.
+For the DMS media widget and media keys, install `mpv-mpris`.
 
 ## Settings
 

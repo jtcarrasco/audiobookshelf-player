@@ -2,6 +2,44 @@
 
 ## 0.2.0 (unreleased)
 
+### Security
+- Server-supplied text (titles, authors, episode names) is always shown as
+  plain text, so markup in a title can't make the shell load remote content.
+- The login token is no longer put in stream or cover URLs: mpv sends it as a
+  request header (mpv publishes the playing URL over MPRIS), and covers load
+  without it. It also stays out of log lines.
+- Server addresses must be http:// or https://.
+- Ids from the server are escaped as single URL path segments, and the cover
+  cache uses sanitized file names.
+
+### DankMaterialShell
+- A DankMaterialShell version of the plugin in `dms/`, sharing the backend and
+  player with the Omarchy one. Title and cover are published over MPRIS
+  (mpv-mpris) for DMS's media widget and media keys.
+
+### Keyboard and polish
+- Keyboard-first navigation, matching the FreshRSS plugin's keys where they
+  overlap: `j`/`k` and Home/End to move through the list, Enter to play or open,
+  `r`/`f` to toggle finished, `1`/`2`/`3` for Home/Books/Podcasts, Tab to switch
+  type, `h`/`l` to skip 30s, `n`/`p` for chapters, `[`/`]` for speed, `c` for the
+  chapter list, `/` or `a` to search, `q`/`R` to refresh, `z` for the pop-out
+  window and `,` for settings.
+- **Changed:** `r` now toggles finished (FreshRSS's "mark read"); refresh moved
+  to `q` / `R`.
+- Keyboard reference at the bottom of the settings page, which now scrolls;
+  the header reads "Settings" once connected. Button tooltips show their keys.
+- Esc in the pop-out window returns to the dropdown instead of leaving the
+  window open.
+- The refresh icon spins while the library reloads (click, `q` or `R`).
+- DMS popout gets the same keys (all but `z`, which DMS has no window for),
+  the keyboard reference in settings, key hints in tooltips, a spinning refresh
+  button and one shared speed value. It takes focus from DMS's popout container
+  right after opening; Esc with nothing to go back from still closes it.
+- Fix: the two player layouts kept separate speed selections and could
+  disagree; speed is now one shared value.
+
+### Rebuild
+
 Rebuilt after the first hands-on test on Omarchy.
 
 - Library and player now live in one dropdown hosted by the bar icon, built on
