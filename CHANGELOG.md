@@ -12,8 +12,9 @@
 - Ids from the server are escaped as single URL path segments, and the cover
   cache uses sanitized file names.
 - Server responses are read with size caps (64 MB for listings, 10 MB per
-  cover, 1 MB for small replies) and an overall 60-second deadline, so a
-  misbehaving server can't exhaust memory or disk.
+  cover, 1 MB for small replies) and an overall 60-second deadline that is
+  checked as data trickles in, plus a hard 2-minute limit per backend call, so
+  a misbehaving server can't exhaust memory or disk or hang the plugin.
 
 ### DankMaterialShell
 - A DankMaterialShell version of the plugin in `dms/`, sharing the backend and

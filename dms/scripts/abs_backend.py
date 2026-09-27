@@ -11,6 +11,7 @@ import time
 from html.parser import HTMLParser
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
+from http.client import HTTPResponse
 from urllib.error import HTTPError, URLError
 
 
@@ -25,32 +26,54 @@ MAX_SMALL_BYTES = 1 * 1024 * 1024      # /ping, login, progress, PATCH replies
 MAX_API_BYTES = 64 * 1024 * 1024       # library and episode listings
 MAX_COVER_BYTES = 10 * 1024 * 1024     # one cover image
 READ_DEADLINE_S = 60
+PROCESS_DEADLINE_S = 120    # whole backend call, all requests included
 _CHUNK = 64 * 1024
 
 
 def read_limited(response, limit: int, deadline_s: float = READ_DEADLINE_S) -> bytes:
-    """Read an HTTP response body in chunks, refusing anything over `limit`
-    bytes (by Content-Length up front, and by what actually arrives) or
-    taking longer than `deadline_s` overall."""
+    """Read an HTTP response body, refusing anything over `limit` bytes (by
+    Content-Length up front, and by what actually arrives) or taking longer
+    than `deadline_s` overall."""
     declared = (getattr(response, "headers", None) or {}).get("Content-Length")
     if declared and str(declared).isdigit() and int(declared) > limit:
         raise AbsAuthError("the server's response was too large")
     deadline = time.monotonic() + deadline_s
+    # read1() returns as soon as any data has arrived (one socket read), so the
+    # deadline is checked even while a server trickles bytes; read(n) would
+    # block until all n bytes came in.
+    streaming = isinstance(response, HTTPResponse)
+    read = response.read1 if streaming else response.read
     chunks, size = [], 0
     while True:
-        chunk = response.read(_CHUNK)
+        if time.monotonic() > deadline:
+            raise AbsAuthError("the server took too long to respond")
+        chunk = read(_CHUNK)
         if not chunk:
             break
         size += len(chunk)
         if size > limit:
             raise AbsAuthError("the server's response was too large")
-        if time.monotonic() > deadline:
-            raise AbsAuthError("the server took too long to respond")
         chunks.append(chunk)
-        # HTTPResponse.read(n) only returns short at the end of the body.
-        if len(chunk) < _CHUNK:
+        if not streaming and len(chunk) < _CHUNK:
             break
     return b"".join(chunks)
+
+
+class BackendTimeout(BaseException):
+    """Raised by the process watchdog. A BaseException so no `except Exception`
+    or `except OSError` inside the backend can swallow it."""
+
+
+def install_watchdog(seconds: int) -> None:
+    """Hard wall-clock limit for this backend process, whatever it's blocked
+    on (a socket read, DNS, a slow server): SIGALRM interrupts it."""
+    import signal
+
+    def expired(signum, frame):
+        raise BackendTimeout("the server took too long to respond")
+
+    signal.signal(signal.SIGALRM, expired)
+    signal.alarm(seconds)
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -773,10 +796,14 @@ if __name__ == "__main__":
             print(json.dumps({"error": f"unknown command {command}"}))
             sys.exit(1)
 
+    install_watchdog(PROCESS_DEADLINE_S)
     try:
         _main()
     except SystemExit:
         raise
+    except BackendTimeout as exc:
+        print(json.dumps({"error": str(exc)}))
+        sys.exit(1)
     except Exception as exc:  # the UI can only read JSON, so report crashes as JSON too
         print(json.dumps({"error": f"backend error: {exc}"}))
         sys.exit(1)
