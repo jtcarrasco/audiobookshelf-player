@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from html.parser import HTMLParser
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
@@ -15,6 +16,41 @@ from urllib.error import HTTPError, URLError
 
 class AbsAuthError(Exception):
     """Raised when login fails (bad credentials, unreachable server, etc.)."""
+
+
+# Upper bounds for what we'll accept from the server. The socket timeout only
+# limits each read, so a fast or endless response could otherwise fill memory
+# or disk; reads also have an overall deadline.
+MAX_SMALL_BYTES = 1 * 1024 * 1024      # /ping, login, progress, PATCH replies
+MAX_API_BYTES = 64 * 1024 * 1024       # library and episode listings
+MAX_COVER_BYTES = 10 * 1024 * 1024     # one cover image
+READ_DEADLINE_S = 60
+_CHUNK = 64 * 1024
+
+
+def read_limited(response, limit: int, deadline_s: float = READ_DEADLINE_S) -> bytes:
+    """Read an HTTP response body in chunks, refusing anything over `limit`
+    bytes (by Content-Length up front, and by what actually arrives) or
+    taking longer than `deadline_s` overall."""
+    declared = (getattr(response, "headers", None) or {}).get("Content-Length")
+    if declared and str(declared).isdigit() and int(declared) > limit:
+        raise AbsAuthError("the server's response was too large")
+    deadline = time.monotonic() + deadline_s
+    chunks, size = [], 0
+    while True:
+        chunk = response.read(_CHUNK)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > limit:
+            raise AbsAuthError("the server's response was too large")
+        if time.monotonic() > deadline:
+            raise AbsAuthError("the server took too long to respond")
+        chunks.append(chunk)
+        # HTTPResponse.read(n) only returns short at the end of the body.
+        if len(chunk) < _CHUNK:
+            break
+    return b"".join(chunks)
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -36,7 +72,7 @@ def check_is_abs(base_url: str) -> None:
     request = Request(base_url.rstrip("/") + "/ping", method="GET")
     try:
         with urlopen(request, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            data = json.loads(read_limited(response, MAX_SMALL_BYTES).decode("utf-8"))
     except URLError as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(exc, HTTPError):
@@ -63,7 +99,7 @@ def login(base_url: str, username: str, password: str) -> dict:
     )
     try:
         with urlopen(request, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return json.loads(read_limited(response, MAX_API_BYTES).decode("utf-8"))
     except HTTPError as exc:
         raise AbsAuthError(f"login rejected: HTTP {exc.code}") from exc
     except URLError as exc:
@@ -89,7 +125,7 @@ def _authed_get(base_url: str, token: str, path: str) -> dict:
     request = Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
     try:
         with urlopen(request, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return json.loads(read_limited(response, MAX_API_BYTES).decode("utf-8"))
     except HTTPError as exc:
         raise AbsAuthError(f"request to {path} failed: HTTP {exc.code}") from exc
     except URLError as exc:
@@ -195,9 +231,9 @@ def cache_cover(base_url: str, token: str, item_id: str) -> str:
         request = Request(cover_url(base_url, item_id, width=512),
                           headers={"Authorization": f"Bearer {token}"})
         with urlopen(request, timeout=10) as response:
-            data = response.read()
-    except (HTTPError, URLError):
-        return ""
+            data = read_limited(response, MAX_COVER_BYTES)
+    except (HTTPError, URLError, AbsAuthError):
+        return ""  # no cover (or an oversized one) just means no MPRIS art
     if not data:
         return ""
     tmp = path + ".tmp"
@@ -219,7 +255,7 @@ def set_finished(base_url: str, token: str, progress_key: str, finished: bool) -
     )
     try:
         with urlopen(request, timeout=10) as response:
-            response.read()
+            read_limited(response, MAX_SMALL_BYTES)
     except HTTPError as exc:
         raise AbsAuthError(f"marking finished failed: HTTP {exc.code}") from exc
     except URLError as exc:
@@ -293,7 +329,7 @@ def get_progress(base_url: str, token: str, item_id: str):
     request = Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
     try:
         with urlopen(request, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return json.loads(read_limited(response, MAX_API_BYTES).decode("utf-8"))
     except HTTPError as exc:
         if exc.code == 404:
             return None
@@ -328,7 +364,7 @@ def start_playback(base_url: str, token: str, item_id: str, episode_id: str = No
     )
     try:
         with urlopen(request, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
+            return json.loads(read_limited(response, MAX_API_BYTES).decode("utf-8"))
     except HTTPError as exc:
         raise AbsAuthError(f"playback session failed: HTTP {exc.code}") from exc
     except URLError as exc:
@@ -373,7 +409,7 @@ def update_progress(base_url: str, token: str, item_id: str, *,
     )
     try:
         with urlopen(request, timeout=10) as response:
-            response.read()
+            read_limited(response, MAX_SMALL_BYTES)
     except HTTPError as exc:
         raise AbsAuthError(f"progress update failed: HTTP {exc.code}") from exc
     except URLError as exc:
