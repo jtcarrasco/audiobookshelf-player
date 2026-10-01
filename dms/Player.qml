@@ -4,16 +4,13 @@ import QtQuick
 import "Model.js" as Model
 
 // Playback state for the plugin: the single mpv instance, what's loaded in it,
-// resume-on-load, and periodic progress sync back to Audiobookshelf. One
-// instance lives inside Panel.qml; BarWidget.qml reaches it through the panel
-// Loader (the same host/panel split the Todoist plugin uses).
+// resume-on-load, and periodic progress sync back to Audiobookshelf. The
+// plugin's main component owns one instance and passes it to its views.
 //
-// This used to be a `pragma Singleton` shared between two manifest entry
-// points. Quickshell only registers singletons for files inside its own shell
-// directory; plugins load from ~/.config/omarchy/plugins/, so references to it
-// resolved to the type rather than an instance and every property read came
-// back undefined (shell log, 2026-09-24: "Cannot read property 'playing' of
-// undefined"). Owning it as a plain child avoids cross-entry-point state.
+// It is a plain child rather than a `pragma Singleton`: Quickshell only
+// registers singletons for files inside its own shell directory, and plugins
+// load from outside it, so a singleton resolves to the type instead of an
+// instance and every property read comes back undefined.
 Item {
   id: state
 
@@ -207,7 +204,7 @@ Item {
         state.chapters = session.chapters || []
         console.log("audiobookshelf: session ready, loading into mpv (socket connected:",
           mpvInstance.socketReady + ")")
-        // MPRIS players (DMS media widget, Omarchy's, media keys) show mpv's
+        // MPRIS clients (shell media widgets, media keys) show mpv's
         // media title; without this it is the stream's file id.
         mpvInstance.send(["set_property", "force-media-title", state.title])
         // mpv-mpris only publishes cover art for remote streams from a local

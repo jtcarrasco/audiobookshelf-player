@@ -1,7 +1,7 @@
-"""Audiobookshelf API backend for the Omarchy plugin.
+"""Audiobookshelf API backend for the bar plugin.
 
 Talks HTTP to a self-hosted Audiobookshelf server. No third-party deps —
-stdlib urllib only, mirroring omarchy-podcasts' scripts/podcasts.py.
+stdlib urllib only.
 """
 import json
 import os
@@ -369,8 +369,7 @@ def start_playback(base_url: str, token: str, item_id: str, episode_id: str = No
     (api.audiobookshelf.org's "Play a Library Item or Podcast Episode") — its response
     carries authoritative duration/chapters/audioTracks for the item even when
     list_library_items()'s response was minified and lacked them. Used by the
-    start-playback CLI command below, which is what LibraryWindow.qml's item-selection
-    wiring (Task 16) actually calls.
+    start-playback CLI command below.
     """
     path = f"/api/items/{_seg(item_id)}/play"
     if episode_id:
@@ -492,8 +491,7 @@ def check_new_episodes(base_url: str, token: str, podcast_library_id: str,
     """Diff the current podcast library against a persisted seen-episode-id
     list. First run seeds the state file and returns [] (never notify on a
     library the plugin has never seen before). Failed fetches degrade to
-    returning [] rather than raising — mirrors omarchy-podcasts' "failed
-    feeds degrade to not-updating" behavior rather than retry-forever.
+    returning [] rather than raising, so the next poll simply tries again.
     """
     if not podcast_library_id:
         return []
@@ -625,7 +623,7 @@ if __name__ == "__main__":
             podcast_library_id = sys.argv[5] if len(sys.argv) > 5 else ""
             # readline(), not read(): the QML side writes one newline-
             # terminated password per attempt on a persistent stdin channel
-            # that is never closed (see SetupWizard.qml) — closing stdin
+            # that is never closed (the QML login form keeps it open) — closing stdin
             # (via stdinEnabled = false) after the first attempt would
             # disable it permanently on that Process object per Quickshell's
             # docs, silently turning every retry's write() into a no-op and
@@ -672,7 +670,7 @@ if __name__ == "__main__":
             sys.exit(0)
 
         # check-configured runs before the token/config load below too —
-        # BarWidget.qml calls it at plugin startup, before it knows whether
+        # the bar widget calls it at plugin startup, before it knows whether
         # config.json (and therefore a token) exists at all.
         if command == "disconnect":
             disconnect()
@@ -699,7 +697,7 @@ if __name__ == "__main__":
             print(json.dumps({"error": "not logged in"}))
             sys.exit(1)
         # base_url and library_id come from plugin config, written by the
-        # login command above (Task 13's setup wizard).
+        # login command above.
         config_path = os.path.expanduser("~/.config/audiobookshelf-plugin/config.json")
         with open(config_path) as f:
             config = json.load(f)

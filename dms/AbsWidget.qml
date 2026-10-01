@@ -1041,7 +1041,7 @@ PluginComponent {
       visible: player.chapters.length > 0
       Layout.fillWidth: true
       iconName: "list"
-      buttonHeight: 32
+      buttonHeight: Theme.buttonHeightXS
       backgroundColor: Theme.surfaceContainerHigh
       textColor: Theme.surfaceText
       text: (root.chaptersOpen ? "Hide chapters" : "Chapters")
@@ -1070,14 +1070,14 @@ PluginComponent {
       visible: player.currentEpisode !== null && (player.currentEpisode.description || "") !== ""
       Layout.fillWidth: true
       iconName: "description"
-      buttonHeight: 32
+      buttonHeight: Theme.buttonHeightXS
       backgroundColor: Theme.surfaceContainerHigh
       textColor: Theme.surfaceText
       text: root.notesOpen ? "Hide show notes" : "Show notes"
       onClicked: root.notesOpen = !root.notesOpen
     }
 
-    Flickable {
+    DankFlickable {
       id: notesView
       visible: root.notesOpen && player.currentEpisode !== null && (player.currentEpisode.description || "") !== ""
       Layout.fillWidth: true

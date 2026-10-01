@@ -15,11 +15,10 @@
     "mpv",
     "python3",
     "secret-tool",
-    "gnome-keyring"
+    "gnome-keyring",
+    "libnotify"
   ],
   "permissions": [
-    "settings_read",
-    "settings_write",
     "process",
     "network"
   ]

@@ -33,8 +33,7 @@ Item {
     onTriggered: {
       pollProcess.running = true
       // Fire-and-forget: drains any progress writes that failed mid-playback
-      // (network blip) and got queued locally, mirroring the fire-and-forget
-      // syncProcess pattern in NowPlayingPopup.qml. Nothing here reacts to the
+      // (network blip) and got queued locally. Nothing here reacts to the
       // result — a failed flush just stays queued for the next cycle.
       flushProcess.command = ["python3", poller.pluginDir + "/scripts/abs_backend.py",
         "flush-pending"]
