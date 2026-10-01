@@ -268,6 +268,7 @@ PluginComponent {
   PollTimer {
     id: poller
     pollMinutes: 20
+    notifyCommand: ["dms", "notify"]
   }
 
   IpcHandler {

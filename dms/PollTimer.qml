@@ -13,6 +13,8 @@ Item {
 
   property int pollMinutes: 20  // bound to the manifest's pollMinutes setting
   property int unreadCount: 0
+  // Command prefix for new-episode alerts; title and body are appended.
+  property var notifyCommand: ["notify-send"]
 
   signal newEpisodesFound(int count)
   signal fetchFailed()
@@ -59,7 +61,7 @@ Item {
           if (newEpisodes.length > 0) {
             poller.unreadCount += newEpisodes.length
             poller.newEpisodesFound(newEpisodes.length)
-            // A single notify-send call per poll cycle rather than one per
+            // A single notification per poll cycle rather than one per
             // episode: notifyProcess is one Process id, and Quickshell's
             // Process.command changes / running = true are no-ops on an
             // already-running process, so looping notifyProcess.running = true
@@ -69,8 +71,8 @@ Item {
             var body = newEpisodes.length === 1
               ? newEpisodes[0].media.metadata.title
               : newEpisodes.length + " new episodes"
-            notifyProcess.command = ["notify-send",
-              newEpisodes.length === 1 ? "New episode" : "New episodes", body]
+            notifyProcess.command = poller.notifyCommand.concat([
+              newEpisodes.length === 1 ? "New episode" : "New episodes", body])
             notifyProcess.running = true
           }
         } catch (e) {
