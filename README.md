@@ -173,6 +173,9 @@ rm -rf ~/.config/audiobookshelf-plugin ~/.local/state/audiobookshelf-plugin
   socket (in `$XDG_RUNTIME_DIR`), resume and progress sync.
 - `scripts/abs_backend.py`: every Audiobookshelf API call (login, libraries,
   items, episodes, progress, covers), standard library only.
+- `dms/`: the DankMaterialShell version. `AbsDaemon.qml` holds the player,
+  poller, IPC and library once per session; `AbsWidget.qml` is the per-bar
+  view. `tools/sync-dms.sh` copies the shared files into it.
 
 ## Development
 

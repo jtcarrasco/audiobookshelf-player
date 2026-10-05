@@ -1,447 +1,49 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
-import Quickshell.Io
 import qs.Common
 import qs.Widgets
 import qs.Modules.Plugins
 import "Model.js" as Model
 
-// DankMaterialShell version of the Audiobookshelf plugin. The shell-independent
-// parts (Player/MpvPlayer/PollTimer/Model.js and the Python backend) are
-// shared with the Omarchy plugin at the repo root (tools/sync-dms.sh).
-//
-// DMS rebuilds popoutContent every time the popout opens, so all state (the
-// player, the library, the login) lives here on the PluginComponent root and
-// the popout only renders it.
+// DankMaterialShell bar widget for the Audiobookshelf plugin. DMS creates one
+// of these per bar, so it holds no state of its own: the player, poller, IPC
+// handler and library live once in the daemon (AbsDaemon.qml), and this file
+// only draws them. DMS also rebuilds popoutContent each time the popout opens.
 PluginComponent {
   id: root
 
   layerNamespacePlugin: "abs-player"
-  popoutWidth: 560
+  popoutWidth: Math.round(Theme.fontSizeMedium * 40)
 
-  readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace("file://", "")
-  function backend(args) {
-    return ["python3", root.pluginDir + "/scripts/abs_backend.py"].concat(args)
+  // The plugin's single daemon instance; null for a moment while DMS spawns it.
+  readonly property var core: pluginService ? (pluginService.pluginDaemonInstances[pluginId] || null) : null
+  readonly property var player: core ? core.player : null
+  readonly property bool newEpisodes: core !== null && core.poller.unreadCount > 0
+
+  // Sizes the popout uses, derived from Theme tokens.
+  readonly property real coverLarge: Theme.iconSizeLarge * 7
+  readonly property real coverSmall: Theme.iconSizeLarge + Theme.spacingXL
+  readonly property real rowCover: Theme.iconSizeLarge + Theme.spacingL
+  readonly property real rowMinHeight: Theme.iconSize + Theme.spacingL + Theme.spacingXS
+  readonly property real listHeight: Math.round(Theme.fontSizeMedium * 51)
+  readonly property real chipHeight: Theme.iconSize + Theme.spacingM
+  readonly property real smallButtonHeight: Theme.iconSize + Theme.spacingS
+  readonly property real logoSize: Theme.iconSizeLarge * 4
+
+  pillRightClickAction: () => { if (root.player) root.player.togglePause() }
+
+  // Register with the daemon so its toggle IPC call can find this bar.
+  property var registeredWith: null
+  function attach() {
+    if (registeredWith === core) return
+    if (registeredWith) registeredWith.unregisterView(root)
+    registeredWith = core
+    if (core) core.registerView(root)
   }
-
-  // ---- State ---------------------------------------------------------------
-  property bool configured: false
-  property string serverUrl: ""
-  property string bookLibId: ""
-  property string podcastLibId: ""
-  property var libraries: []
-  readonly property bool hasBooks: bookLibId !== ""
-  readonly property bool hasPodcasts: podcastLibId !== ""
-  readonly property string defaultType: hasBooks || !hasPodcasts ? "book" : "podcast"
-
-  property var allItems: []
-  property bool itemsLoading: false
-  property string listError: ""
-  property string filterText: ""
-  property string filterType: "book"  // "book" | "podcast" | "" (search across both)
-  property bool browsing: false
-  property bool settingsView: false
-  property var openPodcast: null
-  property var episodes: []
-  property bool episodesLoading: false
-  property bool chaptersOpen: false
-  property bool notesOpen: false
-  property real speed: 1
-  // Keyboard selection in the library/episode list; the highlight only shows
-  // once a key has moved it.
-  property int cursor: 0
-  property bool keyNav: false
-
-  property string setupError: ""
-  property bool setupBusy: false
-  property string pendingPassword: ""
-  property bool confirmDisconnect: false
-
-  readonly property bool onHome: !settingsView && openPodcast === null && !browsing
-  readonly property var visibleItems: allItems.filter(function(it) {
-    var matchesType = filterType === "" || it.mediaType === filterType
-    var needle = filterText.toLowerCase()
-    var title = (it.media.metadata.title || "").toLowerCase()
-    var author = (it.media.metadata.authorName || "").toLowerCase()
-    return matchesType && (needle === "" || title.indexOf(needle) !== -1 || author.indexOf(needle) !== -1)
-  })
-  readonly property var typeOptions: {
-    var opts = []
-    if (hasBooks) opts.push("book")
-    if (hasPodcasts) opts.push("podcast")
-    return opts
-  }
-
-  // ---- Actions -------------------------------------------------------------
-  // The refresh icon spins while the library loads, for at least a moment.
-  readonly property bool refreshing: itemsLoading || spinHold.running
-  Timer { id: spinHold; interval: 600 }
-
-  function refresh() {
-    if (!configured) return
-    spinHold.restart()
-    if (fetchItems.running) return
-    itemsLoading = true
-    listError = ""
-    fetchItems.running = true
-  }
-
-  function goHome() {
-    if (configured) settingsView = false
-    openPodcast = null
-    episodes = []
-    filterType = defaultType
-    filterText = ""
-    browsing = false
-    keyNav = false
-    cursor = 0
-  }
-
-  function goBack() {
-    if (settingsView && configured) { settingsView = false; return true }
-    if (openPodcast) { openPodcast = null; episodes = []; return true }
-    if (browsing) { goHome(); return true }
-    return false
-  }
-
-  function browseType(type) {
-    settingsView = false
-    openPodcast = null
-    filterType = type
-    browsing = true
-  }
-
-  function setSearch(text) {
-    filterText = text
-    if (text !== "" && !browsing) {
-      filterType = ""
-      browsing = true
-    }
-  }
-
-  function openItem(item) {
-    if (item.mediaType === "podcast") {
-      openPodcast = item
-      episodes = []
-      episodesLoading = true
-      fetchEpisodes.command = backend(["list-episodes", item.id])
-      fetchEpisodes.running = true
-    } else {
-      player.playItem(item, null)
-    }
-  }
-
-  function decrementUnplayed(podcastId) {
-    allItems = allItems.map(function(it) {
-      if (it.id !== podcastId || !(it.unplayedCount > 0)) return it
-      var copy = JSON.parse(JSON.stringify(it))
-      copy.unplayedCount = it.unplayedCount - 1
-      return copy
-    })
-  }
-
-  function playEpisode(episode) {
-    if (!episode.userProgress) {
-      decrementUnplayed(openPodcast.id)
-      episodes = episodes.map(function(ep) {
-        if (ep.id !== episode.id) return ep
-        var copy = JSON.parse(JSON.stringify(ep))
-        copy.userProgress = { progress: 0, isFinished: false }
-        return copy
-      })
-    }
-    player.playItem(openPodcast, episode)
-  }
-
-  // Right-click a book or episode to flip its finished state. ABS resets the
-  // position to 0 when an item is marked not finished.
-  function toggleFinished(item, episode) {
-    var prog = (episode ? episode.userProgress : item.userProgress) || null
-    var finished = !(prog && prog.isFinished)
-    var key = episode ? item.id + "/" + episode.id : item.id
-    finishedProcess.command = backend(["set-finished", key, finished ? "true" : "false"])
-    finishedProcess.running = true
-    var patch = function(obj) {
-      var copy = JSON.parse(JSON.stringify(obj))
-      var p = copy.userProgress || { progress: 0 }
-      p.isFinished = finished
-      p.progress = finished ? 1 : 0
-      copy.userProgress = p
-      return copy
-    }
-    if (episode) {
-      if (!episode.userProgress) decrementUnplayed(item.id)
-      episodes = episodes.map(function(ep) { return ep.id === episode.id ? patch(ep) : ep })
-    } else {
-      allItems = allItems.map(function(it) { return it.id === item.id ? patch(it) : it })
-    }
-  }
-
-  // ---- Keyboard (same keys as the Omarchy plugin; no window toggle here) ---
-  readonly property var listModel: openPodcast ? episodes : visibleItems
-  readonly property bool listVisible: !settingsView && !onHome
-  onOpenPodcastChanged: cursor = 0
-  onFilterTypeChanged: cursor = 0
-  onFilterTextChanged: cursor = 0
-
-  function moveCursor(delta) {
-    if (!listVisible || listModel.length === 0) return false
-    keyNav = true
-    cursor = Math.max(0, Math.min(listModel.length - 1, cursor + delta))
-    return true
-  }
-  function jumpTo(first) {
-    if (!listVisible || listModel.length === 0) return false
-    keyNav = true
-    cursor = first ? 0 : listModel.length - 1
-    return true
-  }
-  // Enter: same as clicking the selected row.
-  function activateSelected() {
-    var it = listModel[cursor]
-    if (!listVisible || !it) return false
-    if (openPodcast) playEpisode(it)
-    else openItem(it)
-    return true
-  }
-  // r / f: same as right-clicking the selected row.
-  function toggleFinishedSelected() {
-    var it = listModel[cursor]
-    if (!listVisible || !it) return
-    if (openPodcast) toggleFinished(openPodcast, it)
-    else if (it.mediaType !== "podcast") toggleFinished(it, null)
-  }
-  function skipChapter(direction) {
-    var target = Model.chapterSeekTarget(player.chapters, player.position, direction)
-    if (target >= 0) player.seekTo(target)
-  }
-  function setSpeed(value) {
-    speed = value
-    player.mpv.setSpeed(value)
-  }
-  function cycleType() {
-    if (!browsing || openPodcast || typeOptions.length < 2) return
-    filterType = filterType === "book" ? "podcast" : "book"
-  }
-
-  readonly property var keyHelp: [
-    { key: "j / k", action: "Move down / up the list" },
-    { key: "Home / End", action: "First / last item" },
-    { key: "Enter", action: "Play, or open a podcast" },
-    { key: "r / f", action: "Toggle finished" },
-    { key: "1 / 2 / 3", action: "Home / Books / Podcasts" },
-    { key: "Tab", action: "Switch Books / Podcasts" },
-    { key: "Space", action: "Play / pause" },
-    { key: "h / l", action: "Back / forward 30s" },
-    { key: "n / p", action: "Next / previous chapter" },
-    { key: "[ / ]", action: "Slower / faster" },
-    { key: "c", action: "Show chapters" },
-    { key: "/ or a", action: "Search" },
-    { key: "q / R", action: "Refresh library" },
-    { key: ",", action: "Settings" },
-    { key: "Esc", action: "Back, then close" },
-    { key: "Right-click", action: "Toggle finished on a row" }
-  ]
-
-  function chooseLibrary(mediaType, id) {
-    if (mediaType === "book") bookLibId = id
-    else podcastLibId = id
-    setLibraries.command = backend(["set-libraries", bookLibId, podcastLibId])
-    setLibraries.running = true
-  }
-
-  function librariesOfType(mediaType) {
-    return libraries.filter(function(l) { return l.mediaType === mediaType })
-  }
-
-  onDefaultTypeChanged: if (!browsing) filterType = defaultType
-  onSettingsViewChanged: if (settingsView && configured) listLibraries.running = true
-
-  pillRightClickAction: () => player.togglePause()
-
-  Component.onCompleted: checkConfigured.running = true
-
-  // ---- Player + background work --------------------------------------------
-  Player { id: player }
-
-  PollTimer {
-    id: poller
-    pollMinutes: 20
-    notifyCommand: ["dms", "notify"]
-  }
-
-  IpcHandler {
-    target: "absPlayer"
-    function toggle(): void { root.triggerPopout() }
-    function playPause(): void { player.togglePause() }
-    function browse(type: string): void { root.browseType(type) }
-    function search(query: string): void { root.setSearch(query) }
-    function home(): void { root.goHome() }
-  }
-
-  // ---- Backend processes ---------------------------------------------------
-  Process {
-    id: checkConfigured
-    command: root.backend(["check-configured"])
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var r = JSON.parse(text)
-          root.configured = r.configured === true
-          root.serverUrl = r.baseUrl || ""
-          root.bookLibId = r.libraryId || ""
-          root.podcastLibId = r.podcastLibraryId || ""
-        } catch (e) {}
-        if (!root.configured) root.settingsView = true
-        else root.refresh()
-      }
-    }
-  }
-
-  Process {
-    id: fetchItems
-    command: root.backend(["list-items"])
-    stdout: StdioCollector {
-      onStreamFinished: {
-        root.itemsLoading = false
-        try {
-          var parsed = JSON.parse(text)
-          if (parsed && parsed.error) { root.listError = parsed.error; return }
-          root.allItems = parsed
-        } catch (e) {
-          root.listError = "Couldn't read the library from the backend"
-        }
-      }
-    }
-  }
-
-  Process {
-    id: fetchEpisodes
-    stdout: StdioCollector {
-      onStreamFinished: {
-        root.episodesLoading = false
-        try {
-          var parsed = JSON.parse(text)
-          if (parsed && parsed.error) { root.listError = parsed.error; return }
-          root.episodes = parsed
-        } catch (e) {
-          root.listError = "Couldn't read the episode list"
-        }
-      }
-    }
-  }
-
-  Process {
-    id: finishedProcess
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try { var r = JSON.parse(text); if (r.error) root.listError = r.error } catch (e) {}
-      }
-    }
-  }
-
-  Process {
-    id: mpvCheck
-    command: root.backend(["check-mpv"])
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var installed = false
-        try { installed = JSON.parse(text).installed === true } catch (e) {}
-        if (!installed) {
-          root.setupBusy = false
-          root.pendingPassword = ""
-          root.setupError = "mpv is required but not installed. Install the mpv package, then connect again."
-          return
-        }
-        loginProcess.running = true
-      }
-    }
-  }
-
-  property string loginUrl: ""
-  // The popout clears its password field when this fires.
-  signal loginSucceeded()
-  property string loginUser: ""
-
-  Process {
-    id: loginProcess
-    // stdin stays enabled for the life of this Process (Quickshell never
-    // re-enables it once closed); the backend reads one line per attempt.
-    stdinEnabled: true
-    command: root.backend(["login", root.loginUrl, root.loginUser])
-    onStarted: {
-      write(root.pendingPassword + "\n")
-      root.pendingPassword = ""
-    }
-    stdout: StdioCollector {
-      onStreamFinished: {
-        root.setupBusy = false
-        try {
-          var result = JSON.parse(text)
-          if (result.ok) {
-            root.serverUrl = result.baseUrl || root.loginUrl.replace(/\/+$/, "")
-            root.libraries = result.libraries || []
-            root.bookLibId = result.libraryId || ""
-            root.podcastLibId = result.podcastLibraryId || ""
-            root.configured = true
-            root.settingsView = false
-            root.allItems = []
-            root.loginSucceeded()
-            root.refresh()
-          } else {
-            root.setupError = result.error || "Connection failed"
-          }
-        } catch (e) {
-          root.setupError = "Unexpected response from the backend"
-        }
-      }
-    }
-  }
-
-  Process {
-    id: listLibraries
-    command: root.backend(["list-libraries"])
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try { var r = JSON.parse(text); if (!r.error) root.libraries = r.libraries || [] } catch (e) {}
-      }
-    }
-  }
-
-  Process {
-    id: setLibraries
-    stdout: StdioCollector {
-      onStreamFinished: { root.allItems = []; root.refresh() }
-    }
-  }
-
-  Process {
-    id: disconnectProcess
-    command: root.backend(["disconnect"])
-    stdout: StdioCollector {
-      onStreamFinished: {
-        player.reset()
-        root.configured = false
-        root.serverUrl = ""
-        root.bookLibId = ""
-        root.podcastLibId = ""
-        root.libraries = []
-        root.allItems = []
-        root.episodes = []
-        root.openPodcast = null
-        root.browsing = false
-        root.confirmDisconnect = false
-        root.settingsView = true
-      }
-    }
-  }
-
-  Timer {
-    id: confirmTimer
-    interval: 4000
-    onTriggered: root.confirmDisconnect = false
-  }
+  onCoreChanged: attach()
+  Component.onCompleted: attach()
+  Component.onDestruction: if (registeredWith) registeredWith.unregisterView(root)
 
   // ---- Bar pill --------------------------------------------------------------
   // New episodes tint the icon with the theme's primary color.
@@ -449,8 +51,8 @@ PluginComponent {
     DankIcon {
       name: "headphones"
       size: root.iconSize
-      color: poller.unreadCount > 0 ? Theme.primary : Theme.widgetIconColor
-      opacity: player.playing ? 1 : 0.85
+      color: root.newEpisodes ? Theme.primary : Theme.widgetIconColor
+      opacity: root.player && root.player.playing ? 1 : 0.85
     }
   }
 
@@ -458,7 +60,7 @@ PluginComponent {
     DankIcon {
       name: "headphones"
       size: root.iconSize
-      color: poller.unreadCount > 0 ? Theme.primary : Theme.widgetIconColor
+      color: root.newEpisodes ? Theme.primary : Theme.widgetIconColor
     }
   }
 
@@ -467,7 +69,7 @@ PluginComponent {
     PopoutComponent {
       id: pop
 
-      Component.onCompleted: poller.unreadCount = 0
+      Component.onCompleted: root.core.poller.unreadCount = 0
 
       Item {
         id: bodyHost
@@ -491,7 +93,7 @@ PluginComponent {
           return searchField.getActiveFocus() || urlField.getActiveFocus()
             || userField.getActiveFocus() || passField.getActiveFocus()
         }
-        function moved(ok) { if (ok) itemList.positionViewAtIndex(root.cursor, ListView.Contain) }
+        function moved(ok) { if (ok) itemList.positionViewAtIndex(root.core.cursor, ListView.Contain) }
 
         Keys.onPressed: function(event) {
           var k = event.key
@@ -500,40 +102,40 @@ PluginComponent {
             // Leave a field: Esc anywhere, Down from search into the list.
             if (k === Qt.Key_Escape || (k === Qt.Key_Down && searchField.getActiveFocus())) {
               bodyHost.forceActiveFocus()
-              if (k === Qt.Key_Down) moved(root.moveCursor(0))
+              if (k === Qt.Key_Down) moved(root.core.moveCursor(0))
               event.accepted = true
             }
             return
           }
           event.accepted = true
-          if (k === Qt.Key_Escape) event.accepted = root.goBack()
-          else if (k === Qt.Key_Down || t === "j") moved(root.moveCursor(1))
-          else if (k === Qt.Key_Up || t === "k") moved(root.moveCursor(-1))
-          else if (k === Qt.Key_Home) moved(root.jumpTo(true))
-          else if (k === Qt.Key_End) moved(root.jumpTo(false))
-          else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!root.activateSelected()) player.togglePause() }
-          else if (k === Qt.Key_Space) player.togglePause()
-          else if (k === Qt.Key_Left || t === "h") player.skip(-30)
-          else if (k === Qt.Key_Right || t === "l") player.skip(30)
-          else if (k === Qt.Key_Tab || k === Qt.Key_Backtab) root.cycleType()
-          else if (t === "/" || t === "a") { if (root.configured && !root.settingsView && root.openPodcast === null) searchField.forceActiveFocus() }
-          else if (t === "q" || t === "R") root.refresh()
-          else if (t === "r" || t === "f") root.toggleFinishedSelected()
-          else if (t === "n") root.skipChapter(1)
-          else if (t === "p") root.skipChapter(-1)
-          else if (t === "[") root.setSpeed(Number(Model.stepSpeed(root.speed, -1)))
-          else if (t === "]") root.setSpeed(Number(Model.stepSpeed(root.speed, 1)))
-          else if (t === "c") { if (player.chapters.length > 0) root.chaptersOpen = !root.chaptersOpen }
-          else if (t === "1") { if (root.configured) root.goHome() }
-          else if (t === "2") { if (root.hasBooks) root.browseType("book") }
-          else if (t === "3") { if (root.hasPodcasts) root.browseType("podcast") }
-          else if (t === ",") { if (root.configured) root.settingsView = !root.settingsView }
+          if (k === Qt.Key_Escape) event.accepted = root.core.goBack()
+          else if (k === Qt.Key_Down || t === "j") moved(root.core.moveCursor(1))
+          else if (k === Qt.Key_Up || t === "k") moved(root.core.moveCursor(-1))
+          else if (k === Qt.Key_Home) moved(root.core.jumpTo(true))
+          else if (k === Qt.Key_End) moved(root.core.jumpTo(false))
+          else if (k === Qt.Key_Return || k === Qt.Key_Enter) { if (!root.core.activateSelected()) root.player.togglePause() }
+          else if (k === Qt.Key_Space) root.player.togglePause()
+          else if (k === Qt.Key_Left || t === "h") root.player.skip(-30)
+          else if (k === Qt.Key_Right || t === "l") root.player.skip(30)
+          else if (k === Qt.Key_Tab || k === Qt.Key_Backtab) root.core.cycleType()
+          else if (t === "/" || t === "a") { if (root.core.configured && !root.core.settingsView && root.core.openPodcast === null) searchField.forceActiveFocus() }
+          else if (t === "q" || t === "R") root.core.refresh()
+          else if (t === "r" || t === "f") root.core.toggleFinishedSelected()
+          else if (t === "n") root.core.skipChapter(1)
+          else if (t === "p") root.core.skipChapter(-1)
+          else if (t === "[") root.core.setSpeed(Number(Model.stepSpeed(root.core.speed, -1)))
+          else if (t === "]") root.core.setSpeed(Number(Model.stepSpeed(root.core.speed, 1)))
+          else if (t === "c") { if (root.player.chapters.length > 0) root.core.chaptersOpen = !root.core.chaptersOpen }
+          else if (t === "1") { if (root.core.configured) root.core.goHome() }
+          else if (t === "2") { if (root.core.hasBooks) root.core.browseType("book") }
+          else if (t === "3") { if (root.core.hasPodcasts) root.core.browseType("podcast") }
+          else if (t === ",") { if (root.core.configured) root.core.settingsView = !root.core.settingsView }
           else event.accepted = false
         }
 
         // Home and settings size to their content; lists get a fixed height.
-        readonly property bool compact: root.onHome || root.settingsView
-        implicitHeight: compact ? body.implicitHeight + Theme.spacingM : 720
+        readonly property bool compact: root.core.onHome || root.core.settingsView
+        implicitHeight: compact ? body.implicitHeight + Theme.spacingM : root.listHeight
 
         ColumnLayout {
           id: body
@@ -549,17 +151,17 @@ PluginComponent {
             spacing: Theme.spacingS
 
             DankActionButton {
-              visible: !root.onHome
+              visible: !root.core.onHome
               iconName: "arrow_back"
               tooltipText: "Back (Esc)"
-              onClicked: root.goBack()
+              onClicked: root.core.goBack()
             }
 
             StyledText {
               Layout.fillWidth: true
-              text: root.settingsView ? (root.configured ? "Settings" : "Connect to Audiobookshelf")
-                : root.openPodcast ? root.openPodcast.media.metadata.title
-                : root.browsing ? (root.filterType === "podcast" ? "Podcasts" : root.filterType === "book" ? "Books" : "Search")
+              text: root.core.settingsView ? (root.core.configured ? "Settings" : "Connect to Audiobookshelf")
+                : root.core.openPodcast ? root.core.openPodcast.media.metadata.title
+                : root.core.browsing ? (root.core.filterType === "podcast" ? "Podcasts" : root.core.filterType === "book" ? "Books" : "Search")
                 : ""
               font.pixelSize: Theme.fontSizeLarge
               font.weight: Font.Bold
@@ -568,21 +170,21 @@ PluginComponent {
             }
 
             DankActionButton {
-              visible: root.configured
+              visible: root.core.configured
               iconName: "home"
               tooltipText: "Library home (1)"
-              onClicked: root.goHome()
+              onClicked: root.core.goHome()
             }
             DankActionButton {
               id: refreshButton
-              visible: root.configured && !root.settingsView
+              visible: root.core.configured && !root.core.settingsView
               iconName: "refresh"
               tooltipText: "Refresh library (q / R)"
-              onClicked: root.refresh()
+              onClicked: root.core.refresh()
               // The button is circular, so spinning the whole thing reads as
               // a spinning icon.
               RotationAnimation on rotation {
-                running: root.refreshing
+                running: root.core.refreshing
                 from: 0; to: 360
                 duration: 900
                 loops: Animation.Infinite
@@ -590,10 +192,10 @@ PluginComponent {
               }
             }
             DankActionButton {
-              visible: root.configured
+              visible: root.core.configured
               iconName: "settings"
               tooltipText: "Settings (,)"
-              onClicked: root.settingsView = !root.settingsView
+              onClicked: root.core.settingsView = !root.core.settingsView
             }
             DankActionButton {
               iconName: "close"
@@ -604,7 +206,7 @@ PluginComponent {
 
           // ---- Connection form ---------------------------------------------
           ColumnLayout {
-            visible: root.settingsView
+            visible: root.core.settingsView
             Layout.fillWidth: true
             spacing: Theme.spacingS
 
@@ -615,32 +217,24 @@ PluginComponent {
               color: Theme.surfaceVariantText
               font.pixelSize: Theme.fontSizeSmall
             }
-            DankTextField { id: urlField; Layout.fillWidth: true; placeholderText: "Server URL, e.g. http://localhost:13378"; text: root.serverUrl }
+            DankTextField { id: urlField; Layout.fillWidth: true; placeholderText: "Server URL, e.g. http://localhost:13378"; text: root.core.serverUrl }
             DankTextField { id: userField; Layout.fillWidth: true; placeholderText: "Username" }
             DankTextField { id: passField; Layout.fillWidth: true; placeholderText: "Password"; echoMode: TextInput.Password; showPasswordToggle: true }
-            Connections { target: root; function onLoginSucceeded() { passField.text = "" } }
+            Connections { target: root.core; function onLoginSucceeded() { passField.text = "" } }
 
             StyledText {
               Layout.fillWidth: true
-              visible: root.setupError !== ""
-              text: root.setupError
+              visible: root.core.setupError !== ""
+              text: root.core.setupError
               wrapMode: Text.WordWrap
               color: Theme.error
               font.pixelSize: Theme.fontSizeSmall
             }
 
             DankButton {
-              text: root.setupBusy ? "Connecting..." : "Connect"
+              text: root.core.setupBusy ? "Connecting..." : "Connect"
               iconName: "login"
-              onClicked: {
-                if (root.setupBusy) return
-                root.setupError = ""
-                root.setupBusy = true
-                root.loginUrl = urlField.text.trim()
-                root.loginUser = userField.text.trim()
-                root.pendingPassword = passField.text
-                mpvCheck.running = true
-              }
+              onClicked: root.core.login(urlField.text.trim(), userField.text.trim(), passField.text)
             }
 
             // Library pickers only when there's a choice to make.
@@ -648,8 +242,8 @@ PluginComponent {
               model: ["book", "podcast"]
               delegate: ColumnLayout {
                 required property string modelData
-                readonly property var libs: root.librariesOfType(modelData)
-                visible: root.configured && libs.length > 1
+                readonly property var libs: root.core.librariesOfType(modelData)
+                visible: root.core.configured && libs.length > 1
                 Layout.fillWidth: true
                 StyledText {
                   text: modelData === "book" ? "Books library" : "Podcasts library"
@@ -658,14 +252,14 @@ PluginComponent {
                 }
                 DankButtonGroup {
                   model: libs.map(function(l) { return l.name })
-                  currentIndex: libs.findIndex(function(l) { return l.id === (modelData === "book" ? root.bookLibId : root.podcastLibId) })
-                  onSelectionChanged: function(index, selected) { if (selected) root.chooseLibrary(modelData, libs[index].id) }
+                  currentIndex: libs.findIndex(function(l) { return l.id === (modelData === "book" ? root.core.bookLibId : root.core.podcastLibId) })
+                  onSelectionChanged: function(index, selected) { if (selected) root.core.chooseLibrary(modelData, libs[index].id) }
                 }
               }
             }
 
             StyledText {
-              visible: root.configured
+              visible: root.core.configured
               Layout.fillWidth: true
               Layout.topMargin: Theme.spacingM
               wrapMode: Text.WordWrap
@@ -674,20 +268,12 @@ PluginComponent {
               font.pixelSize: Theme.fontSizeSmall
             }
             DankButton {
-              visible: root.configured
-              text: root.confirmDisconnect ? "Click again to disconnect" : "Disconnect"
+              visible: root.core.configured
+              text: root.core.confirmDisconnect ? "Click again to disconnect" : "Disconnect"
               iconName: "logout"
-              backgroundColor: root.confirmDisconnect ? Theme.error : Theme.surfaceContainerHigh
-              textColor: root.confirmDisconnect ? Theme.primaryText : Theme.surfaceText
-              onClicked: {
-                if (!root.confirmDisconnect) {
-                  root.confirmDisconnect = true
-                  confirmTimer.restart()
-                  return
-                }
-                confirmTimer.stop()
-                disconnectProcess.running = true
-              }
+              backgroundColor: root.core.confirmDisconnect ? Theme.error : Theme.surfaceContainerHigh
+              textColor: root.core.confirmDisconnect ? Theme.primaryText : Theme.surfaceText
+              onClicked: root.core.disconnectClicked()
             }
 
             // Keyboard reference, same keys as the Omarchy plugin.
@@ -706,7 +292,7 @@ PluginComponent {
               columnSpacing: Theme.spacingM
               rowSpacing: Theme.spacingXS
               Repeater {
-                model: root.keyHelp
+                model: root.core.keyHelp
                 delegate: Item {
                   required property var modelData
                   // Each entry spans two cells: a key chip, then its action.
@@ -750,21 +336,21 @@ PluginComponent {
           NowPlaying {
             Layout.fillWidth: true
             large: true
-            visible: root.onHome && (player.hasItem || player.errorText !== "")
+            visible: root.core.onHome && (root.player.hasItem || root.player.errorText !== "")
           }
 
           Column {
-            visible: root.onHome && !player.hasItem && player.errorText === ""
+            visible: root.core.onHome && !root.player.hasItem && root.player.errorText === ""
             Layout.fillWidth: true
             Layout.topMargin: Theme.spacingL
             spacing: Theme.spacingS
             Image {
               anchors.horizontalCenter: parent.horizontalCenter
-              source: root.serverUrl !== "" ? root.serverUrl + "/icon.svg" : ""
-              sourceSize.width: 128
-              sourceSize.height: 128
-              width: 128
-              height: 128
+              source: root.core.serverUrl !== "" ? root.core.serverUrl + "/icon.svg" : ""
+              sourceSize.width: root.logoSize
+              sourceSize.height: root.logoSize
+              width: root.logoSize
+              height: root.logoSize
               fillMode: Image.PreserveAspectFit
               asynchronous: true
             }
@@ -777,8 +363,8 @@ PluginComponent {
             }
             StyledText {
               anchors.horizontalCenter: parent.horizontalCenter
-              visible: root.serverUrl !== ""
-              text: root.serverUrl
+              visible: root.core.serverUrl !== ""
+              text: root.core.serverUrl
               font.pixelSize: Theme.fontSizeSmall
               color: urlMouse.containsMouse ? Theme.primary : Theme.surfaceVariantText
               MouseArea {
@@ -786,7 +372,7 @@ PluginComponent {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: Qt.openUrlExternally(root.serverUrl)
+                onClicked: Qt.openUrlExternally(root.core.serverUrl)
               }
             }
           }
@@ -795,12 +381,12 @@ PluginComponent {
           NowPlaying {
             Layout.fillWidth: true
             large: false
-            visible: !root.settingsView && !root.onHome && (player.hasItem || player.errorText !== "")
+            visible: !root.core.settingsView && !root.core.onHome && (root.player.hasItem || root.player.errorText !== "")
           }
 
           // ---- Search + type buttons ---------------------------------------
           RowLayout {
-            visible: root.configured && !root.settingsView && root.openPodcast === null
+            visible: root.core.configured && !root.core.settingsView && root.core.openPodcast === null
             Layout.fillWidth: true
             spacing: Theme.spacingS
 
@@ -810,20 +396,20 @@ PluginComponent {
               placeholderText: "Search title or author  (/ or a)"
               leftIconName: "search"
               showClearButton: true
-              text: root.filterText
-              onTextEdited: root.setSearch(text)
+              text: root.core.filterText
+              onTextEdited: root.core.setSearch(text)
             }
 
             Repeater {
-              model: root.typeOptions
+              model: root.core.typeOptions
               delegate: DankButton {
                 required property string modelData
                 text: modelData === "book" ? "Books" : "Podcasts"
                 iconName: modelData === "book" ? "book_2" : "podcasts"
-                buttonHeight: 36
-                backgroundColor: root.browsing && root.filterType === modelData ? Theme.primary : Theme.surfaceContainerHigh
-                textColor: root.browsing && root.filterType === modelData ? Theme.primaryText : Theme.surfaceText
-                onClicked: root.browseType(modelData)
+                buttonHeight: root.chipHeight
+                backgroundColor: root.core.browsing && root.core.filterType === modelData ? Theme.primary : Theme.surfaceContainerHigh
+                textColor: root.core.browsing && root.core.filterType === modelData ? Theme.primaryText : Theme.surfaceText
+                onClicked: root.core.browseType(modelData)
                 HoverTip { text: modelData === "book" ? "Books (2)" : "Podcasts (3)" }
               }
             }
@@ -831,12 +417,12 @@ PluginComponent {
 
           StyledText {
             Layout.fillWidth: true
-            visible: !root.settingsView && !root.onHome && (root.listError !== "" || root.itemsLoading || root.episodesLoading
-              || (root.openPodcast === null && root.visibleItems.length === 0))
-            text: root.listError !== "" ? root.listError
-              : (root.itemsLoading || root.episodesLoading) ? "Loading..."
-              : (root.allItems.length === 0 ? "Nothing in your libraries yet." : "No matches.")
-            color: root.listError !== "" ? Theme.error : Theme.surfaceVariantText
+            visible: !root.core.settingsView && !root.core.onHome && (root.core.listError !== "" || root.core.itemsLoading || root.core.episodesLoading
+              || (root.core.openPodcast === null && root.core.visibleItems.length === 0))
+            text: root.core.listError !== "" ? root.core.listError
+              : (root.core.itemsLoading || root.core.episodesLoading) ? "Loading..."
+              : (root.core.allItems.length === 0 ? "Nothing in your libraries yet." : "No matches.")
+            color: root.core.listError !== "" ? Theme.error : Theme.surfaceVariantText
             wrapMode: Text.WordWrap
             font.pixelSize: Theme.fontSizeSmall
           }
@@ -846,37 +432,37 @@ PluginComponent {
             id: itemList
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: !root.settingsView && !root.onHome
+            visible: !root.core.settingsView && !root.core.onHome
             clip: true
             spacing: Theme.spacingXS
-            model: root.openPodcast ? root.episodes : root.visibleItems
+            model: root.core.openPodcast ? root.core.episodes : root.core.visibleItems
             delegate: ListRow {
               width: itemList.width
-              selected: root.keyNav && index === root.cursor
+              selected: root.core.keyNav && index === root.core.cursor
               readonly property var prog: modelData.userProgress || null
-              cover: root.openPodcast ? "" : (modelData.coverUrl || "")
-              icon: root.openPodcast ? "graphic_eq" : (modelData.mediaType === "podcast" ? "podcasts" : "book_2")
-              primary: root.openPodcast ? modelData.title : (modelData.media.metadata.title || "")
-              secondary: root.openPodcast
+              cover: root.core.openPodcast ? "" : (modelData.coverUrl || "")
+              icon: root.core.openPodcast ? "graphic_eq" : (modelData.mediaType === "podcast" ? "podcasts" : "book_2")
+              primary: root.core.openPodcast ? modelData.title : (modelData.media.metadata.title || "")
+              secondary: root.core.openPodcast
                 ? Model.formatDate(modelData.publishedAt) + (modelData.duration ? "  ·  " + Model.formatTime(modelData.duration) : "")
                   + (prog && prog.isFinished ? "  ·  Played" : (prog && prog.progress > 0 ? "  ·  " + Math.round(prog.progress * 100) + "% played" : ""))
                 : (modelData.media.metadata.authorName || (modelData.mediaType === "podcast" ? "Podcast" : ""))
                   + (prog && prog.isFinished ? "  ·  Finished" : "")
-              current: root.openPodcast
-                ? (player.currentEpisode !== null && player.currentEpisode.id === modelData.id)
-                : (player.currentItem !== null && player.currentItem.id === modelData.id)
-              marker: root.openPodcast !== null && prog === null
-              badge: (!root.openPodcast && modelData.mediaType === "podcast" && modelData.unplayedCount > 0)
+              current: root.core.openPodcast
+                ? (root.player.currentEpisode !== null && root.player.currentEpisode.id === modelData.id)
+                : (root.player.currentItem !== null && root.player.currentItem.id === modelData.id)
+              marker: root.core.openPodcast !== null && prog === null
+              badge: (!root.core.openPodcast && modelData.mediaType === "podcast" && modelData.unplayedCount > 0)
                 ? modelData.unplayedCount + " unplayed" : ""
               progressFraction: (prog && !prog.isFinished && prog.progress > 0) ? prog.progress : -1
               finished: prog !== null && prog.isFinished === true
-              tooltip: (root.openPodcast || modelData.mediaType !== "podcast")
+              tooltip: (root.core.openPodcast || modelData.mediaType !== "podcast")
                 ? (finished ? "Right-click or r / f to mark as not finished (restarts from 0:00)" : "Right-click or r / f to mark as finished")
                 : ""
-              onActivated: root.openPodcast ? root.playEpisode(modelData) : root.openItem(modelData)
+              onActivated: root.core.openPodcast ? root.core.playEpisode(modelData) : root.core.openItem(modelData)
               onContextActivated: {
-                if (root.openPodcast) root.toggleFinished(root.openPodcast, modelData)
-                else if (modelData.mediaType !== "podcast") root.toggleFinished(modelData, null)
+                if (root.core.openPodcast) root.core.toggleFinished(root.core.openPodcast, modelData)
+                else if (modelData.mediaType !== "podcast") root.core.toggleFinished(modelData, null)
               }
             }
           }
@@ -911,25 +497,30 @@ PluginComponent {
     property bool large: false
     spacing: Theme.spacingS
 
-    readonly property string coverSrc: player.currentItem ? (player.currentItem.coverUrl || "") : ""
+    readonly property real skipIcon: large ? Theme.iconSize + Theme.spacingXS : Theme.iconSizeSmall + Theme.spacingXS
+    readonly property real skipButton: skipIcon + (large ? Theme.spacingL : Theme.spacingM)
+    readonly property real playIcon: large ? Theme.iconSizeLarge + Theme.spacingS : Theme.iconSize
+    readonly property real playButton: playIcon + (large ? Theme.spacingL + Theme.spacingXS : Theme.spacingL)
+
+    readonly property string coverSrc: root.player.currentItem ? (root.player.currentItem.coverUrl || "") : ""
 
     // Large: cover centered, title and author below.
     Item {
-      visible: np.large && player.hasItem && np.coverSrc !== ""
+      visible: np.large && root.player.hasItem && np.coverSrc !== ""
       Layout.fillWidth: true
-      implicitHeight: 220
+      implicitHeight: root.coverLarge
       Rectangle {
         anchors.horizontalCenter: parent.horizontalCenter
-        width: 220
-        height: 220
+        width: root.coverLarge
+        height: root.coverLarge
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
         clip: true
         Image {
           anchors.fill: parent
           source: np.coverSrc
-          sourceSize.width: 440
-          sourceSize.height: 440
+          sourceSize.width: root.coverLarge * 2
+          sourceSize.height: root.coverLarge * 2
           fillMode: Image.PreserveAspectCrop
           asynchronous: true
         }
@@ -937,32 +528,32 @@ PluginComponent {
     }
 
     RowLayout {
-      visible: player.hasItem
+      visible: root.player.hasItem
       Layout.fillWidth: true
       spacing: Theme.spacingM
       Rectangle {
         visible: !np.large && np.coverSrc !== ""
-        Layout.preferredWidth: 56
-        Layout.preferredHeight: 56
+        Layout.preferredWidth: root.coverSmall
+        Layout.preferredHeight: root.coverSmall
         radius: Theme.cornerRadius
         color: Theme.surfaceContainerHigh
         clip: true
         Image {
           anchors.fill: parent
           source: np.coverSrc
-          sourceSize.width: 112
-          sourceSize.height: 112
+          sourceSize.width: root.coverSmall * 2
+          sourceSize.height: root.coverSmall * 2
           fillMode: Image.PreserveAspectCrop
           asynchronous: true
         }
       }
       ColumnLayout {
         Layout.fillWidth: true
-        spacing: 2
+        spacing: Theme.spacingXXS
         StyledText {
           Layout.fillWidth: true
           horizontalAlignment: np.large ? Text.AlignHCenter : Text.AlignLeft
-          text: player.title
+          text: root.player.title
           font.pixelSize: np.large ? Theme.fontSizeLarge : Theme.fontSizeMedium
           font.weight: Font.Bold
           color: Theme.surfaceText
@@ -970,9 +561,9 @@ PluginComponent {
         }
         StyledText {
           Layout.fillWidth: true
-          visible: player.subtitle !== ""
+          visible: root.player.subtitle !== ""
           horizontalAlignment: np.large ? Text.AlignHCenter : Text.AlignLeft
-          text: player.subtitle
+          text: root.player.subtitle
           font.pixelSize: Theme.fontSizeSmall
           color: Theme.surfaceVariantText
           elide: Text.ElideRight
@@ -982,114 +573,114 @@ PluginComponent {
 
     DankSlider {
       id: seek
-      visible: player.hasItem
+      visible: root.player.hasItem
       Layout.fillWidth: true
       minimum: 0
-      maximum: Math.max(1, Math.round(player.duration))
-      value: Math.round(player.position)
+      maximum: Math.max(1, Math.round(root.player.duration))
+      value: Math.round(root.player.position)
       showValue: false
       wheelEnabled: false
-      onSliderDragFinished: function(v) { player.seekTo(v) }
+      onSliderDragFinished: function(v) { root.player.seekTo(v) }
     }
 
     RowLayout {
-      visible: player.hasItem
+      visible: root.player.hasItem
       Layout.fillWidth: true
       StyledText {
-        text: Model.formatTime(player.position)
+        text: Model.formatTime(root.player.position)
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
       }
       Item { Layout.fillWidth: true }
       StyledText {
-        text: player.loading ? "Loading..." : Model.formatTime(player.duration)
+        text: root.player.loading ? "Loading..." : Model.formatTime(root.player.duration)
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
       }
     }
 
     RowLayout {
-      visible: player.hasItem
+      visible: root.player.hasItem
       Layout.fillWidth: true
       spacing: Theme.spacingS
       Item { visible: np.large; Layout.fillWidth: true }
-      DankActionButton { iconName: "replay_30"; buttonSize: np.large ? 44 : 32; iconSize: np.large ? 28 : 20; tooltipText: "Back 30s (h)"; onClicked: player.skip(-30) }
+      DankActionButton { iconName: "replay_30"; buttonSize: np.skipButton; iconSize: np.skipIcon; tooltipText: "Back 30s (h)"; onClicked: root.player.skip(-30) }
       DankActionButton {
-        iconName: player.playing ? "pause" : "play_arrow"
-        buttonSize: np.large ? 60 : 40
-        iconSize: np.large ? 40 : 26
+        iconName: root.player.playing ? "pause" : "play_arrow"
+        buttonSize: np.playButton
+        iconSize: np.playIcon
         iconColor: Theme.primary
-        tooltipText: player.playing ? "Pause (Space)" : "Play (Space)"
-        onClicked: player.togglePause()
+        tooltipText: root.player.playing ? "Pause (Space)" : "Play (Space)"
+        onClicked: root.player.togglePause()
       }
-      DankActionButton { iconName: "forward_30"; buttonSize: np.large ? 44 : 32; iconSize: np.large ? 28 : 20; tooltipText: "Forward 30s (l)"; onClicked: player.skip(30) }
+      DankActionButton { iconName: "forward_30"; buttonSize: np.skipButton; iconSize: np.skipIcon; tooltipText: "Forward 30s (l)"; onClicked: root.player.skip(30) }
       Item { Layout.fillWidth: true }
       // The group doesn't move its own highlight, so currentIndex is bound to
-      // root.speed (which also survives the popout being rebuilt).
+      // root.core.speed (which also survives the popout being rebuilt).
       DankButtonGroup {
         readonly property var speeds: [0.8, 1, 1.25, 1.5, 2]
         size: "small"
         model: ["0.8x", "1x", "1.25x", "1.5x", "2x"]
-        currentIndex: speeds.indexOf(root.speed)
+        currentIndex: speeds.indexOf(root.core.speed)
         onSelectionChanged: function(index, selected) {
           if (!selected) return
-          root.setSpeed(speeds[index])
+          root.core.setSpeed(speeds[index])
         }
       }
     }
 
     DankButton {
-      visible: player.chapters.length > 0
+      visible: root.player.chapters.length > 0
       Layout.fillWidth: true
       iconName: "list"
-      buttonHeight: Theme.buttonHeightXS
+      buttonHeight: root.smallButtonHeight
       backgroundColor: Theme.surfaceContainerHigh
       textColor: Theme.surfaceText
-      text: (root.chaptersOpen ? "Hide chapters" : "Chapters")
-        + (player.currentChapterIndex >= 0 ? "  ·  " + player.chapters[player.currentChapterIndex].title : "")
-      onClicked: root.chaptersOpen = !root.chaptersOpen
+      text: (root.core.chaptersOpen ? "Hide chapters" : "Chapters")
+        + (root.player.currentChapterIndex >= 0 ? "  ·  " + root.player.chapters[root.player.currentChapterIndex].title : "")
+      onClicked: root.core.chaptersOpen = !root.core.chaptersOpen
       HoverTip { text: "Show or hide chapters (c)" }
     }
 
     DankListView {
       id: chapterList
-      visible: root.chaptersOpen && player.chapters.length > 0
+      visible: root.core.chaptersOpen && root.player.chapters.length > 0
       Layout.fillWidth: true
-      Layout.preferredHeight: Math.min(contentHeight, 180)
+      Layout.preferredHeight: Math.min(contentHeight, Theme.fontSizeMedium * 13)
       clip: true
-      model: player.chapters
+      model: root.player.chapters
       delegate: ListRow {
         width: chapterList.width
         primary: modelData.title
         secondary: Model.formatTime(modelData.start)
-        current: index === player.currentChapterIndex
-        onActivated: player.seekTo(modelData.start)
+        current: index === root.player.currentChapterIndex
+        onActivated: root.player.seekTo(modelData.start)
       }
     }
 
     DankButton {
-      visible: player.currentEpisode !== null && (player.currentEpisode.description || "") !== ""
+      visible: root.player.currentEpisode !== null && (root.player.currentEpisode.description || "") !== ""
       Layout.fillWidth: true
       iconName: "description"
-      buttonHeight: Theme.buttonHeightXS
+      buttonHeight: root.smallButtonHeight
       backgroundColor: Theme.surfaceContainerHigh
       textColor: Theme.surfaceText
-      text: root.notesOpen ? "Hide show notes" : "Show notes"
-      onClicked: root.notesOpen = !root.notesOpen
+      text: root.core.notesOpen ? "Hide show notes" : "Show notes"
+      onClicked: root.core.notesOpen = !root.core.notesOpen
     }
 
     DankFlickable {
       id: notesView
-      visible: root.notesOpen && player.currentEpisode !== null && (player.currentEpisode.description || "") !== ""
+      visible: root.core.notesOpen && root.player.currentEpisode !== null && (root.player.currentEpisode.description || "") !== ""
       Layout.fillWidth: true
-      Layout.preferredHeight: Math.min(notesText.implicitHeight, 200)
+      Layout.preferredHeight: Math.min(notesText.implicitHeight, Theme.fontSizeMedium * 14)
       clip: true
       contentWidth: width
       contentHeight: notesText.implicitHeight
       StyledText {
         id: notesText
         width: notesView.width
-        text: player.currentEpisode ? (player.currentEpisode.description || "") : ""
+        text: root.player.currentEpisode ? (root.player.currentEpisode.description || "") : ""
         wrapMode: Text.WordWrap
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
@@ -1098,8 +689,8 @@ PluginComponent {
 
     StyledText {
       Layout.fillWidth: true
-      visible: player.errorText !== ""
-      text: player.errorText
+      visible: root.player.errorText !== ""
+      text: root.player.errorText
       wrapMode: Text.WordWrap
       font.pixelSize: Theme.fontSizeSmall
       color: Theme.error
@@ -1124,7 +715,7 @@ PluginComponent {
     signal contextActivated()
 
     readonly property real contentOpacity: finished && !current ? 0.5 : 1
-    implicitHeight: Math.max(44, (cover !== "" ? 48 : textCol.implicitHeight) + Theme.spacingS * 2)
+    implicitHeight: Math.max(root.rowMinHeight, (cover !== "" ? root.rowCover : textCol.implicitHeight) + Theme.spacingS * 2)
 
     StyledRect {
       anchors.fill: parent
@@ -1140,8 +731,8 @@ PluginComponent {
       anchors.bottom: parent.bottom
       anchors.topMargin: Theme.spacingXS
       anchors.bottomMargin: Theme.spacingXS
-      width: 3
-      radius: 1.5
+      width: Theme.spacingXXS
+      radius: width / 2
       color: Theme.primary
     }
 
@@ -1151,8 +742,8 @@ PluginComponent {
       anchors.left: parent.left
       anchors.leftMargin: Theme.spacingS
       anchors.verticalCenter: parent.verticalCenter
-      width: visible ? 48 : 0
-      height: 48
+      width: visible ? root.rowCover : 0
+      height: root.rowCover
       radius: Theme.cornerRadius
       color: Theme.surfaceContainerHigh
       clip: true
@@ -1160,8 +751,8 @@ PluginComponent {
       Image {
         anchors.fill: parent
         source: row.cover
-        sourceSize.width: 96
-        sourceSize.height: 96
+        sourceSize.width: root.rowCover * 2
+        sourceSize.height: root.rowCover * 2
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         cache: true
@@ -1186,9 +777,9 @@ PluginComponent {
       anchors.left: glyph.visible ? glyph.right : parent.left
       anchors.leftMargin: Theme.spacingS
       anchors.verticalCenter: parent.verticalCenter
-      width: 8
-      height: 8
-      radius: 4
+      width: Theme.spacingS
+      height: Theme.spacingS
+      radius: width / 2
       color: Theme.primary
     }
 
@@ -1233,7 +824,7 @@ PluginComponent {
       anchors.right: badgePill.visible ? badgePill.left : finishedMark.visible ? finishedMark.left : parent.right
       anchors.rightMargin: Theme.spacingM
       anchors.verticalCenter: parent.verticalCenter
-      spacing: 2
+      spacing: Theme.spacingXXS
       StyledText {
         width: parent.width
         text: row.primary
@@ -1256,8 +847,8 @@ PluginComponent {
       anchors.left: parent.left
       anchors.bottom: parent.bottom
       anchors.leftMargin: Theme.spacingS
-      height: 3
-      radius: 1.5
+      height: Theme.spacingXXS
+      radius: height / 2
       width: (parent.width - Theme.spacingS * 2) * Math.min(1, row.progressFraction)
       color: Theme.primary
     }

@@ -20,6 +20,10 @@
 - A DankMaterialShell version of the plugin in `dms/`, sharing the backend and
   player with the Omarchy one. Title and cover are published over MPRIS
   (mpv-mpris) for DMS's media widget and media keys.
+- The DMS plugin is a daemon plus a bar widget: the player, new-episode poller
+  and IPC handler run once, however many bars show the widget, and the IPC
+  `toggle` opens the popout on the focused screen. Popout sizes come from DMS
+  Theme tokens that exist since 1.6.0.
 
 ### Keyboard and polish
 - Keyboard-first navigation, matching the FreshRSS plugin's keys where they
