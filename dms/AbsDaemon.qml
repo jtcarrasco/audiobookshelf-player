@@ -291,10 +291,13 @@ PluginComponent {
           root.serverUrl = r.baseUrl || ""
           root.bookLibId = r.libraryId || ""
           root.podcastLibId = r.podcastLibraryId || ""
-        } catch (e) {}
+        } catch (e) { console.warn("audiobookshelf: check-configured: unreadable output:", text) }
         if (!root.configured) root.settingsView = true
         else root.refresh()
       }
+    }
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") console.warn("audiobookshelf: check-configured stderr:", text.trim())
     }
   }
 
@@ -353,8 +356,18 @@ PluginComponent {
           root.setupError = "mpv is required but not installed. Install the mpv package, then connect again."
           return
         }
+        // Set explicitly rather than relying on the declarative binding: the
+        // arguments are only correct once loginUrl/loginUser are assigned.
+        loginProcess.command = root.backend(["login", root.loginUrl, root.loginUser])
         loginProcess.running = true
       }
+    }
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") console.warn("audiobookshelf: check-mpv stderr:", text.trim())
+    }
+    onExited: (exitCode, exitStatus) => {
+      if (exitCode !== 0 && root.setupBusy && root.setupError === "")
+        root.setupError = "The backend exited with code " + exitCode + " (is python3 installed?)"
     }
   }
 
@@ -373,9 +386,24 @@ PluginComponent {
       write(root.pendingPassword + "\n")
       root.pendingPassword = ""
     }
+    onExited: (exitCode, exitStatus) => {
+      // Never leave the form stuck on "Connecting...": if the process died
+      // without a parsable result, report it instead of waiting forever.
+      if (root.setupBusy) {
+        root.setupBusy = false
+        if (root.setupError === "")
+          root.setupError = exitCode === 0
+            ? "The backend ended without a result"
+            : "The backend exited with code " + exitCode + " (is python3 installed?)"
+      }
+    }
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") console.warn("audiobookshelf: login stderr:", text.trim())
+    }
     stdout: StdioCollector {
       onStreamFinished: {
         root.setupBusy = false
+        setupWatchdog.stop()
         try {
           var result = JSON.parse(text)
           if (result.ok) {
@@ -442,6 +470,25 @@ PluginComponent {
     onTriggered: root.confirmDisconnect = false
   }
 
+  // A process that never starts (python3 missing) or dies without output leaves
+  // no usable signal behind, and Quickshell has no QML handler for a failed
+  // start. Without this the form would sit on "Connecting..." and every later
+  // click would return early at the setupBusy guard, looking like it did
+  // nothing at all. Root level: Process has no default property for children.
+  Timer {
+    id: setupWatchdog
+    interval: 5000
+    repeat: true
+    onTriggered: {
+      if (!root.setupBusy) { stop(); return }
+      if (mpvCheck.running || loginProcess.running) return
+      stop()
+      root.setupBusy = false
+      root.pendingPassword = ""
+      if (root.setupError === "") root.setupError = "The backend didn't start (is python3 installed?)"
+    }
+  }
+
   // ---- Called from the popout ----------------------------------------------
   function login(url, user, password) {
     if (setupBusy) return
@@ -450,6 +497,7 @@ PluginComponent {
     loginUrl = url
     loginUser = user
     pendingPassword = password
+    setupWatchdog.restart()
     mpvCheck.running = true
   }
 
@@ -461,6 +509,10 @@ PluginComponent {
       return
     }
     confirmTimer.stop()
+    // A login may still be in flight; drop it so the form can be used again.
+    setupWatchdog.stop()
+    setupBusy = false
+    pendingPassword = ""
     disconnectProcess.running = true
   }
 
