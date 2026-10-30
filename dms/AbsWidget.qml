@@ -86,8 +86,15 @@ PluginComponent {
         // onto a button. Whenever focus lands anywhere but here or a text
         // field, take it back so keys keep working.
         readonly property Item focusNow: Window.activeFocusItem
-        onFocusNowChanged: if (focusNow !== bodyHost && !anyFieldFocused()) refocus.restart()
-        Timer { id: refocus; interval: 30; onTriggered: if (!bodyHost.anyFieldFocused()) bodyHost.forceActiveFocus() }
+        onFocusNowChanged: if (!focusIsInBody(focusNow) && !anyFieldFocused()) refocus.restart()
+        Timer { id: refocus; interval: 30; onTriggered: if (!bodyHost.anyFieldFocused() && !bodyHost.focusIsInBody(Window.activeFocusItem)) bodyHost.forceActiveFocus() }
+        // Whether `item` is this body or one of its children. Focus on a
+        // control inside the body (a button taking the click, a text field)
+        // must stay there: yanking it back to the body cancels the click.
+        function focusIsInBody(item) {
+          for (var it = item; it; it = it.parent) if (it === bodyHost) return true
+          return false
+        }
 
         function anyFieldFocused() {
           return searchField.getActiveFocus() || urlField.getActiveFocus()
@@ -154,6 +161,7 @@ PluginComponent {
               visible: !root.core.onHome
               iconName: "arrow_back"
               tooltipText: "Back (Esc)"
+              focusPolicy: Qt.TabFocus
               onClicked: root.core.goBack()
             }
 
@@ -173,6 +181,7 @@ PluginComponent {
               visible: root.core.configured
               iconName: "home"
               tooltipText: "Library home (1)"
+              focusPolicy: Qt.TabFocus
               onClicked: root.core.goHome()
             }
             DankActionButton {
@@ -180,6 +189,7 @@ PluginComponent {
               visible: root.core.configured && !root.core.settingsView
               iconName: "refresh"
               tooltipText: "Refresh library (q / R)"
+              focusPolicy: Qt.TabFocus
               onClicked: root.core.refresh()
               // The button is circular, so spinning the whole thing reads as
               // a spinning icon.
@@ -195,11 +205,13 @@ PluginComponent {
               visible: root.core.configured
               iconName: "settings"
               tooltipText: "Settings (,)"
+              focusPolicy: Qt.TabFocus
               onClicked: root.core.settingsView = !root.core.settingsView
             }
             DankActionButton {
               iconName: "close"
               tooltipText: "Close (Esc)"
+              focusPolicy: Qt.TabFocus
               onClicked: pop.closePopout && pop.closePopout()
             }
           }
@@ -234,6 +246,7 @@ PluginComponent {
             DankButton {
               text: root.core.setupBusy ? "Connecting..." : "Connect"
               iconName: "login"
+              focusPolicy: Qt.TabFocus
               onClicked: root.core.login(urlField.text.trim(), userField.text.trim(), passField.text)
             }
 
