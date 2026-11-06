@@ -6,6 +6,8 @@ control playback from a dropdown that matches your Omarchy theme.
 
 *An independent client. Not affiliated with or endorsed by the Audiobookshelf project.*
 
+<a href="https://buymeacoffee.com/jtcarrasco"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="41"></a>
+
 | Now playing | Home |
 |---|---|
 | ![Now playing](screenshots/player.png) | ![Home](screenshots/home.png) |
@@ -185,6 +187,12 @@ uv run --with pytest --with pyside6 python -m pytest tests
 
 `tests/test_abs_backend.py` covers the backend with no network access;
 `tests/test_model.py` loads `Model.js` in a real QML engine.
+
+## Support
+
+Audiobookshelf for Omarchy is free and stays free. If it saves you some time, you can [buy me a coffee](https://buymeacoffee.com/jtcarrasco).
+
+<a href="https://buymeacoffee.com/jtcarrasco"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="41"></a>
 
 ## License
 
